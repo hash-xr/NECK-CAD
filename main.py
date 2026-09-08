@@ -116,4 +116,4 @@ if __name__ == "__main__":
     session = controller.create_session([sample_path])
     processed_session = controller.process_session(session)
     
-    print("\n" + controller.reporter.format_text_report(processed_session))
+    print("\n" + controller.reporter.format_text_report(processed_session)) 

@@ -13,8 +13,8 @@ class SystemConfig:
     
     # Preprocessing
     TARGET_IMAGE_SIZE: Tuple[int, int] = (224, 224)
-    NORMALIZE_MEAN: List[float] = field(default_factory=lambda: [0.485, 0.456, 0.406])
-    NORMALIZE_STD: List[float] = field(default_factory=lambda: [0.229, 0.224, 0.225])
+    NORMALISE_MEAN: List[float] = field(default_factory=lambda: [0.485, 0.456, 0.406])
+    NORMALISE_STD: List[float] = field(default_factory=lambda: [0.229, 0.224, 0.225])
     
     # Classification & Uncertainty
     CONFIDENCE_THRESHOLD: float = 0.60

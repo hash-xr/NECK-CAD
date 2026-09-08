@@ -16,17 +16,17 @@ class ImageNormaliser:
             T.Resize(self.config.TARGET_IMAGE_SIZE),
             T.ToTensor(),  # Scales PIL Image (0-255) to Tensor float (0.0 - 1.0)
             T.Normalize(
-                mean=self.config.NORMALIZE_MEAN,
-                std=self.config.NORMALIZE_STD
+                mean=self.config.NORMALISE_MEAN,
+                std=self.config.NORMALISE_STD
             )
         ])
 
-    def normalize_stain(self, pil_img: Image.Image) -> Image.Image:
+    def normalise_stain(self, pil_img: Image.Image) -> Image.Image:
         """
-        Optional Hook for Stain Normalization (e.g., Macenko / Vahadane).
+        Optional Hook for Stain Normalisation (e.g., Macenko / Vahadane).
         Can integrate torchstain or custom reference matrix here if required.
         """
-        # Returns image unchanged if stain normalization is disabled or unavailable
+        # Returns image unchanged if stain normalisation is disabled or unavailable
         return pil_img
 
     def process(self, metadata: ImageMetadata, pil_img: Image.Image) -> ImageMetadata:
@@ -35,11 +35,11 @@ class ImageNormaliser:
             return metadata
 
         try:
-            # 1. Apply Stain Normalization Hook
-            normalized_pil = self.normalize_stain(pil_img)
+            # 1. Apply Stain Normalisation Hook
+            normalised_pil = self.normalise_stain(pil_img)
             
             # 2. PyTorch Tensor Transformations
-            tensor: torch.Tensor = self.transform_pipeline(normalized_pil)
+            tensor: torch.Tensor = self.transform_pipeline(normalised_pil)
             
             # Add Batch Dimension [C, H, W] -> [1, C, H, W]
             metadata.processed_tensor = tensor.unsqueeze(0)
