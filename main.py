@@ -13,6 +13,7 @@ from diagnosis.classifier import DiagnosticClassifier
 from aggregation.fusion import MultiImageFusionEngine
 from uncertainty.estimator import UncertaintyEstimator
 from explainability.visualiser import GradCAMVisualiser
+from reporting.generator import ClinicalReportGenerator
 
 class NeckCADController:
     def __init__(self):
@@ -26,7 +27,8 @@ class NeckCADController:
         self.fusion_engine = MultiImageFusionEngine(self.logger)
         self.uncertainty_estimator = UncertaintyEstimator(self.config, self.logger)
         self.visualiser = GradCAMVisualiser(self.logger)
-        self.logger.log("NECK-CAD Controller fully instantiated with Phase 5 safety & explainability.")
+        self.reporter = ClinicalReportGenerator(self.logger)
+        self.logger.log("NECK-CAD Controller initialised with Phase 6 Reporting Engine.")
 
     def create_session(self, file_paths: list[str]) -> AnalysisSession:
         session_id = str(uuid.uuid4())[:8]
@@ -94,7 +96,10 @@ class NeckCADController:
                 session.aggregated_result, avg_milan_probs, simulated_raw_logits
             )
 
-        self.logger.log(f"Session {session.session_id} execution complete.")
+        # 9. Clinical Report Generation
+        self.reporter.save_report(session)
+
+        self.logger.log(f"Session {session.session_id} execution and reporting complete.")
         return session
 
 if __name__ == "__main__":
@@ -111,12 +116,4 @@ if __name__ == "__main__":
     session = controller.create_session([sample_path])
     processed_session = controller.process_session(session)
     
-    res = processed_session.aggregated_result
-    print("\n--- Diagnostic & Uncertainty Results ---")
-    if res:
-        print(f"Primary Category:   {res.primary_category}")
-        print(f"Milan Category:     {res.milan_category}")
-        print(f"Specific Entity:    {res.specific_diagnosis}")
-        print(f"Uncertainty Flag:   {res.is_uncertain}")
-        print(f"OOD Flag:           {res.is_ood}")
-        print(f"Explanations Count: {len(processed_session.explanations)}")
+    print("\n" + controller.reporter.format_text_report(processed_session))
