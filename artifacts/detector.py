@@ -2,6 +2,9 @@ import logging
 from dataclasses import dataclass
 import numpy as np
 import cv2
+from typing import Optional
+
+from traceability.logger import AuditLogger
 
 logger = logging.getLogger("NECK-CAD.Artifacts")
 
@@ -22,15 +25,17 @@ class CytologyArtifactDetector:
 
     def __init__(
         self,
+        logger: Optional[AuditLogger] = None,
         max_rbc_ratio: float = 0.40,
         max_debris_ratio: float = 0.35,
         min_edge_sharpness: float = 12.0,
     ):
+        self.logger = logger
         self.max_rbc_ratio = max_rbc_ratio
         self.max_debris_ratio = max_debris_ratio
         self.min_edge_sharpness = min_edge_sharpness
 
-    def assess_fov(self, img_rgb: np.ndarray) -> ArtifactAssessment:
+    def assess_fov(self, img_rgb: np.ndarray, image_id: Optional[str] = None) -> ArtifactAssessment:
         """
         Evaluates input FOV image for cytological artifacts.
 
@@ -41,6 +46,7 @@ class CytologyArtifactDetector:
             ArtifactAssessment: Structured artifact metrics and usability flags.
         """
         flags = []
+        prefix = f"[{image_id}] " if image_id else ""
 
         # 1. RBC / Blood Contamination Detection (HSV Red Channel Masking)
         hsv = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2HSV)
@@ -75,6 +81,12 @@ class CytologyArtifactDetector:
             flags.append(f"High background debris/gel occlusion ({debris_ratio:.1%} of FOV)")
 
         is_usable = len(flags) == 0
+
+        if self.logger:
+            if is_usable:
+                self.logger.log(f"{prefix}Artifact assessment passed (RBC: {rbc_ratio:.1%}, Debris: {debris_ratio:.1%}).")
+            else:
+                self.logger.log(f"{prefix}Artifact flags triggered: {', '.join(flags)}", level="WARNING")
 
         return ArtifactAssessment(
             rbc_coverage_ratio=rbc_ratio,
