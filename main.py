@@ -1,38 +1,108 @@
 import os
+import logging
+from typing import List, Dict, Optional
 import uuid
+
 import torch
 from PIL import Image
-from config.settings import config
-from core.schema import AnalysisSession, ImageMetadata, ImageStatus
+import numpy as np
+
+from config.settings import SystemConfig
+from core.schema import (
+    DiagnosticSession,
+    ImageMetadata,
+    ImageStatus,
+    AggregatedResult,
+    MilanCategory,
+)
 from traceability.logger import AuditLogger
 from input.receiver import InputReceiver
 from validation.validator import TechnicalValidator
 from quality.evaluator import QualityEvaluator
 from preprocessing.normaliser import ImageNormaliser
-from diagnosis.classifier import DiagnosticClassifier
-from aggregation.fusion import MultiImageFusionEngine
+from models.backbone_factory import BackboneFactory
+from morphology.extractor import MorphologyExtractor
+from aggregation.fusion import QualityWeightedAttentionFusion
+from diagnosis.classifier import HybridDiagnosticClassifier
 from uncertainty.estimator import UncertaintyEstimator
 from explainability.visualiser import GradCAMVisualiser
 from reporting.generator import ClinicalReportGenerator
 
-class NeckCADController:
-    def __init__(self):
-        self.config = config
-        self.logger = AuditLogger()
-        self.receiver = InputReceiver(self.logger)
-        self.validator = TechnicalValidator(self.config, self.logger)
-        self.evaluator = QualityEvaluator(self.config, self.logger)
-        self.normaliser = ImageNormaliser(self.config, self.logger)
-        self.classifier = DiagnosticClassifier(self.config, self.logger)
-        self.fusion_engine = MultiImageFusionEngine(self.logger)
-        self.uncertainty_estimator = UncertaintyEstimator(self.config, self.logger)
-        self.visualiser = GradCAMVisualiser(self.logger)
-        self.reporter = ClinicalReportGenerator(self.logger)
-        self.logger.log("NECK-CAD Controller initialised with Phase 6 Reporting Engine.")
+logger = logging.getLogger("NECK-CAD.Main")
 
-    def create_session(self, file_paths: list[str]) -> AnalysisSession:
+
+class NeckCADController:
+    """Central orchestrator connecting pipeline modules to the GUI layer."""
+
+    def __init__(self, config: Optional[SystemConfig] = None):
+        self.config = config or SystemConfig()
+        self.audit_logger = AuditLogger()
+
+        # --- Pipeline Engines -------------------------------------------------
+        # NOTE: Passing self.audit_logger into each stage the way the old
+        # main.py did (self.logger everywhere). If your current versions of
+        # these classes only accept keyword config values, drop the
+        # `logger=` kwarg below — I don't have those files to confirm the
+        # signature, so double check this against the actual constructors.
+        self.receiver = InputReceiver(logger=self.audit_logger)
+        self.validator = TechnicalValidator(
+            config=self.config,
+            logger=self.audit_logger,
+        )
+        self.evaluator = QualityEvaluator(
+            config=self.config,
+            logger=self.audit_logger,
+        )
+        self.normaliser = ImageNormaliser(
+            config=self.config,
+            logger=self.audit_logger,
+        )
+
+        # --- Feature Extraction & Model Engines --------------------------------
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        # Frozen pretrained backbone (Phikon / UNI / Virchow / ResNet50).
+        # Ready for forward execution immediately; trained later in the
+        # training step, so it stays frozen here.
+        self.backbone = BackboneFactory.create(
+            model_name=self.config.DEFAULT_BACKBONE, pretrained=True
+        ).to(self.device)
+        self.backbone.eval()
+
+        self.morphology_extractor = MorphologyExtractor(
+            backend="watershed",
+            min_area=self.config.MIN_NUCLEUS_AREA,
+            max_area=self.config.MAX_NUCLEUS_AREA,
+        )
+
+        embedding_dim = self.backbone.get_embedding_dim()
+        self.fusion_engine = QualityWeightedAttentionFusion(feature_dim=embedding_dim).to(self.device)
+
+        # Multi-task head: takes the concatenated D+9 (embedding + morphology)
+        # vector through its projection layers.
+        self.classifier = HybridDiagnosticClassifier(
+            embedding_dim=embedding_dim,
+            morphology_dim=9,
+            num_primary=3,
+            num_milan=7,
+            num_entities=10,
+        ).to(self.device)
+
+        self.uncertainty_estimator = UncertaintyEstimator(
+            config=self.config,
+            logger=self.audit_logger,
+        )
+        self.visualiser = GradCAMVisualiser(self.audit_logger)
+        self.reporter = ClinicalReportGenerator(self.audit_logger)
+
+        logger.info(
+            f"NeckCADController initialised successfully on device '{self.device}' "
+            f"using backbone '{self.config.DEFAULT_BACKBONE}'."
+        )
+
+    def create_session(self, file_paths: list[str]) -> DiagnosticSession:
         session_id = str(uuid.uuid4())[:8]
-        session = AnalysisSession(session_id=session_id)
+        session = DiagnosticSession(session_id=session_id)
         
         for index, path in enumerate(file_paths):
             image_id = f"IMG_{session_id}_{index+1:02d}"
@@ -43,77 +113,157 @@ class NeckCADController:
             )
             session.images.append(metadata)
             
-        self.logger.log(f"Session {session_id} created with {len(file_paths)} image(s).")
+        self.audit_logger.log(f"Session {session_id} created with {len(file_paths)} image(s).")
         return session
 
-    def process_session(self, session: AnalysisSession) -> AnalysisSession:
-        predictions_list = []
-        valid_metadata_list = []
+    def process_session(self, session: DiagnosticSession) -> DiagnosticSession:
+        """Executes the full diagnostic analysis pipeline across session images."""
+        valid_tensors = []
+        valid_morphology_vectors = []
+        valid_quality_scores = []
+        valid_image_ids = []
+        valid_raw_images = []  # kept for real Grad-CAM generation later
 
-        for metadata in session.images:
-            # 1. Ingestion
-            metadata, raw_img = self.receiver.load_image(metadata)
-            if raw_img is None or metadata.status != ImageStatus.PENDING:
+        for img_meta in session.images:
+            # 1. Ingestion / graceful load
+            # Restored from the old pipeline: load via the receiver instead of
+            # a bare Image.open(), so a corrupt/unreadable file is marked
+            # invalid instead of throwing and killing the whole session.
+            img_meta, raw_img = self.receiver.load_image(img_meta)
+            if raw_img is None or img_meta.status != ImageStatus.PENDING:
                 continue
 
-            # 2. Technical Validation
-            metadata = self.validator.validate(metadata, raw_img)
-            if metadata.status != ImageStatus.VALID:
+            # 2. Technical File Validation
+            img_meta = self.validator.validate(img_meta, raw_img)
+            if img_meta.status != ImageStatus.VALID:
                 continue
 
-            # 3. Quality Control
-            metadata = self.evaluator.evaluate(metadata, raw_img)
-            if metadata.status != ImageStatus.VALID:
+            # 3. Quality Control & Blur Assessment
+            img_meta = self.evaluator.evaluate_quality(img_meta, raw_img)
+            if img_meta.status != ImageStatus.VALID:
                 continue
 
             # 4. Preprocessing
-            metadata = self.normaliser.process(metadata, raw_img)
-            if metadata.status != ImageStatus.VALID or metadata.processed_tensor is None:
+            # Open the image as required by pipeline
+            pil_img = Image.open(img_meta.file_path).convert("RGB")
+            img_meta = self.normaliser.process(img_meta, pil_img)
+
+            if img_meta.status == ImageStatus.REJECTED_QUALITY:
                 continue
+            if img_meta.processed_tensor is not None:
+                img_meta.processed_tensor = img_meta.processed_tensor.to(self.device)
 
-            # 5. Diagnostic Inference
-            preds = self.classifier.predict_single_image(metadata.processed_tensor)
-            predictions_list.append(preds)
-            valid_metadata_list.append(metadata)
+            np_img = np.array(pil_img)
+            # 5. Quantitative Morphology Extraction
+            morph_metrics = self.morphology_extractor.extract_features(np_img)
+            morph_vector = torch.from_numpy(morph_metrics.to_vector()).unsqueeze(0).to(self.device)
 
-            # 6. Generate Visual Explanation (Grad-CAM Overlay)
-            overlay = self.visualiser.generate_heatmap(raw_img, preds["features"])
-            session.explanations[metadata.image_id] = overlay
+            # 6. Backbone Deep Feature Extraction (frozen)
+            with torch.no_grad():
+                deep_embedding = self.backbone(img_meta.processed_tensor)
 
-        # 7. Multi-Image Aggregation
-        session.aggregated_result = self.fusion_engine.aggregate_session_predictions(
-            predictions_list, valid_metadata_list
+            valid_tensors.append(deep_embedding)
+            valid_morphology_vectors.append(morph_vector)
+            valid_quality_scores.append(img_meta.quality_score)
+            valid_image_ids.append(img_meta.image_id)
+            valid_raw_images.append(raw_img)
+
+        if not valid_tensors:
+            logger.warning(f"Session {session.session_id}: No valid image FOVs passed quality gating.")
+            return session
+
+        # 7. Multi-FOV Evidence Aggregation
+        stacked_embeddings = torch.cat(valid_tensors, dim=0)
+        stacked_morphology = torch.cat(valid_morphology_vectors, dim=0)
+
+        # Average quantitative morphology across valid FOVs
+        case_morphology = torch.mean(stacked_morphology, dim=0, keepdim=True)
+
+        case_embedding, attention_weights = self.fusion_engine(
+            stacked_embeddings, quality_scores=valid_quality_scores
         )
 
-        # 8. Uncertainty & OOD Safeguard Check
-        if session.aggregated_result and predictions_list:
-            avg_milan_probs = torch.mean(
-                torch.stack([p["milan_probs"] for p in predictions_list]), dim=0
-            )
-            simulated_raw_logits = torch.log(avg_milan_probs + 1e-8)
-            
-            session.aggregated_result = self.uncertainty_estimator.evaluate_uncertainty(
-                session.aggregated_result, avg_milan_probs, simulated_raw_logits
+        # 8. Multi-Task Diagnostic Classification (D+9 -> projection layers)
+        with torch.no_grad():
+            outputs = self.classifier(case_embedding, case_morphology)
+
+        milan_probs = outputs["milan_probs"].squeeze(0).cpu().numpy()
+        primary_probs = outputs["primary_probs"].squeeze(0).cpu().numpy()
+        entity_probs = outputs["entity_probs"].squeeze(0).cpu().numpy()
+
+        # 9. Uncertainty & OOD Analysis
+        # 9a. Map predictions to schema categories first so we have the indices
+        milan_labels = [
+            MilanCategory.I_NON_DIAGNOSTIC,
+            MilanCategory.II_NON_NEOPLASTIC,
+            MilanCategory.III_AUS,
+            MilanCategory.IVA_NEOPLASM_BENIGN,
+            MilanCategory.IVB_SUMP,
+            MilanCategory.V_SUSPICIOUS,
+            MilanCategory.VI_MALIGNANT,
+        ]
+        top_milan_idx = int(np.argmax(milan_probs))
+        selected_milan = milan_labels[top_milan_idx]
+
+        primary_labels = ["Non-Diagnostic", "Non-Neoplastic", "Neoplastic"]
+        top_primary_idx = int(np.argmax(primary_probs))
+        selected_primary = primary_labels[top_primary_idx]
+
+        # 9b. Pass original PyTorch tensors from the 'outputs' dict to the estimator
+        milan_probs_tensor = outputs["milan_probs"]
+        milan_logits_tensor = outputs["milan_logits"]
+
+        entropy = self.uncertainty_estimator.calculate_entropy(milan_probs_tensor)
+        energy = self.uncertainty_estimator.calculate_energy(milan_logits_tensor)
+
+        # 9c. Evaluate Uncertainty & OOD flags
+        top_confidence = float(milan_probs[top_milan_idx])
+        
+        is_uncertain = False
+        if top_confidence < self.uncertainty_estimator.config.CONFIDENCE_THRESHOLD or entropy > 0.75:
+            is_uncertain = True
+            logger.warning(
+                f"Prediction flagged as UNCERTAIN. Top confidence: {top_confidence:.2f}, Normalized Entropy: {entropy:.2f}"
             )
 
-        # 9. Clinical Report Generation
-        self.reporter.save_report(session)
+        is_ood = False
+        if energy > self.uncertainty_estimator.config.OOD_ENERGY_THRESHOLD:
+            is_ood = True
+            logger.warning(
+                f"Input flagged as OUT-OF-DISTRIBUTION (OOD). Energy score ({energy:.2f}) exceeds threshold ({self.uncertainty_estimator.config.OOD_ENERGY_THRESHOLD:.2f})."
+            )
 
-        self.logger.log(f"Session {session.session_id} execution and reporting complete.")
+        # 9d. Build the final aggregated result
+        session.aggregated_result = AggregatedResult(
+            primary_category=selected_primary,
+            milan_category=selected_milan.value,
+            specific_diagnosis="Pending Model Training Split",
+            confidence_scores={
+                "milan_confidence": top_confidence,
+                "primary_confidence": float(primary_probs[top_primary_idx]),
+                "shannon_entropy": float(entropy),
+                "free_energy": float(energy),
+            },
+            differential_diagnosis=[
+                (milan_labels[i].value, float(milan_probs[i])) for i in range(len(milan_labels))
+            ],
+            is_uncertain=is_uncertain,
+            is_ood=is_ood,
+        )
+
+
+        # 10. Visual Explainability (real Grad-CAM overlays)
+        # Restored: use the actual raw image + features, the way the old
+        # pipeline did, instead of the placeholder generate_mock_cam(). If
+        # generate_mock_cam was a deliberate temporary stub while Grad-CAM
+        # support catches up with the new embedding pipeline, swap this back.
+        for idx, img_id in enumerate(valid_image_ids):
+            overlay = self.visualiser.generate_heatmap(
+                valid_raw_images[idx], valid_tensors[idx]
+            )
+            session.explanations[img_id] = overlay
+
+        self.audit_logger.log(
+            message=f"Session {session.session_id} processing, execution and reporting complete. Milan Category: {selected_milan.value}.",
+        )
         return session
-
-if __name__ == "__main__":
-    controller = NeckCADController()
-    
-    test_img_dir = "tests"
-    os.makedirs(test_img_dir, exist_ok=True)
-    sample_path = os.path.join(test_img_dir, "sample_test.png")
-    
-    if not os.path.exists(sample_path):
-        dummy_img = Image.new("RGB", (300, 300), color=(180, 120, 160))
-        dummy_img.save(sample_path)
-
-    session = controller.create_session([sample_path])
-    processed_session = controller.process_session(session)
-    
-    print("\n" + controller.reporter.format_text_report(processed_session)) 
