@@ -20,6 +20,7 @@ from input.receiver import InputReceiver
 from validation.validator import TechnicalValidator
 from quality.evaluator import QualityEvaluator
 from preprocessing.normaliser import ImageNormaliser
+from artifacts.detector import CytologyArtifactDetector
 from models.backbone_factory import BackboneFactory
 from morphology.extractor import MorphologyExtractor
 from aggregation.fusion import QualityWeightedAttentionFusion
@@ -56,6 +57,10 @@ class NeckCADController:
         self.normaliser = ImageNormaliser(
             config=self.config,
             logger=self.audit_logger,
+        )
+
+        self.artifact_detector = CytologyArtifactDetector(
+            logger=self.audit_logger
         )
 
         # --- Feature Extraction & Model Engines --------------------------------
@@ -138,23 +143,31 @@ class NeckCADController:
             if img_meta.status != ImageStatus.VALID:
                 continue
 
-            # 3. Quality Control & Blur Assessment
+            # 3. Quality Control, Blur Assessment & Artifact Detection
             img_meta = self.evaluator.evaluate_quality(img_meta, raw_img)
             if img_meta.status != ImageStatus.VALID:
                 continue
 
+            np_raw = np.array(raw_img.convert("RGB"))
+            artifact_res = self.artifact_detector.assess_fov(np_raw, image_id=img_meta.image_id)
+            if not artifact_res.is_usable:
+                img_meta.status = ImageStatus.REJECTED_QUALITY
+                img_meta.rejection_reason = " | ".join(artifact_res.flag_reasons)
+                continue
+            
             # 4. Preprocessing
             # Open the image as required by pipeline
-            pil_img = Image.open(img_meta.file_path).convert("RGB")
-            img_meta = self.normaliser.process(img_meta, pil_img)
+            pil_img = raw_img.convert("RGB")
+            stain_norm_pil = self.normaliser.normalise_stain(pil_img)
+            img_meta = self.normaliser.process(img_meta, stain_norm_pil)
 
             if img_meta.status == ImageStatus.REJECTED_QUALITY:
                 continue
             if img_meta.processed_tensor is not None:
                 img_meta.processed_tensor = img_meta.processed_tensor.to(self.device)
 
-            np_img = np.array(pil_img)
             # 5. Quantitative Morphology Extraction
+            np_img = np.array(stain_norm_pil)
             morph_metrics = self.morphology_extractor.extract_features(np_img)
             morph_vector = torch.from_numpy(morph_metrics.to_vector()).unsqueeze(0).to(self.device)
 
