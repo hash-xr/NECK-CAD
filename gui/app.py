@@ -3,6 +3,14 @@ import tempfile
 import streamlit as st
 from PIL import Image
 
+import sys
+import os
+
+current_dir = os.path.dirname(os.path.abspath(__file__))
+root_dir = os.path.abspath(os.path.join(current_dir, ".."))
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
+
 # Import central controller and schemas
 from main import NeckCADController
 from core.schema import ImageStatus
