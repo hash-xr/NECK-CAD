@@ -27,7 +27,7 @@ class QualityEvaluator:
             
         return True, "OK"
 
-    def evaluate(self, metadata: ImageMetadata, pil_img: Image.Image) -> ImageMetadata:
+    def evaluate_quality(self, metadata: ImageMetadata, pil_img: Image.Image) -> ImageMetadata:
         """Gates images based on focus quality and exposure analytical suitability."""
         if metadata.status != ImageStatus.VALID:
             return metadata
