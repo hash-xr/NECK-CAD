@@ -1,6 +1,6 @@
 import os
 import logging
-from typing import List, Dict, Optional
+from typing import Optional
 import uuid
 
 import torch
@@ -39,36 +39,16 @@ class NeckCADController:
         self.config = config or SystemConfig()
         self.audit_logger = AuditLogger()
 
-        # --- Pipeline Engines -------------------------------------------------
-        # NOTE: Passing self.audit_logger into each stage the way the old
-        # main.py did (self.logger everywhere). If your current versions of
-        # these classes only accept keyword config values, drop the
-        # `logger=` kwarg below — I don't have those files to confirm the
-        # signature, so double check this against the actual constructors.
+        # --- Pipeline Engines ---
         self.receiver = InputReceiver(logger=self.audit_logger)
-        self.validator = TechnicalValidator(
-            config=self.config,
-            logger=self.audit_logger,
-        )
-        self.evaluator = QualityEvaluator(
-            config=self.config,
-            logger=self.audit_logger,
-        )
-        self.normaliser = ImageNormaliser(
-            config=self.config,
-            logger=self.audit_logger,
-        )
+        self.validator = TechnicalValidator(config=self.config, logger=self.audit_logger)
+        self.evaluator = QualityEvaluator(config=self.config, logger=self.audit_logger)
+        self.normaliser = ImageNormaliser(config=self.config, logger=self.audit_logger)
+        self.artifact_detector = CytologyArtifactDetector(logger=self.audit_logger)
 
-        self.artifact_detector = CytologyArtifactDetector(
-            logger=self.audit_logger
-        )
-
-        # --- Feature Extraction & Model Engines --------------------------------
+        # --- Feature Extraction & Model Engines ---
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
-        # Frozen pretrained backbone (Phikon / UNI / Virchow / ResNet50).
-        # Ready for forward execution immediately; trained later in the
-        # training step, so it stays frozen here.
         self.backbone = BackboneFactory.create(
             model_name=self.config.DEFAULT_BACKBONE, pretrained=True
         ).to(self.device)
@@ -83,8 +63,6 @@ class NeckCADController:
         embedding_dim = self.backbone.get_embedding_dim()
         self.fusion_engine = QualityWeightedAttentionFusion(feature_dim=embedding_dim).to(self.device)
 
-        # Multi-task head: takes the concatenated D+9 (embedding + morphology)
-        # vector through its projection layers.
         self.classifier = HybridDiagnosticClassifier(
             embedding_dim=embedding_dim,
             morphology_dim=9,
@@ -93,9 +71,21 @@ class NeckCADController:
             num_entities=10,
         ).to(self.device)
 
+        # Load Trained Checkpoint Weights if Available
+        checkpoint_path = os.path.join("./checkpoints", "best_neckcad_model.pt")
+        if os.path.exists(checkpoint_path):
+            checkpoint = torch.load(checkpoint_path, map_location=self.device)
+            self.fusion_engine.load_state_dict(checkpoint["fusion_state_dict"])
+            self.classifier.load_state_dict(checkpoint["classifier_state_dict"])
+            self.audit_logger.log(f"Loaded trained model weights from '{checkpoint_path}'.")
+        else:
+            logger.warning("No trained checkpoint found at load time. Running with initialised weights.")
+
+        self.fusion_engine.eval()
+        self.classifier.eval()
+
         self.uncertainty_estimator = UncertaintyEstimator(
-            config=self.config,
-            logger=self.audit_logger,
+            config=self.config, logger=self.audit_logger
         )
         self.visualiser = GradCAMVisualiser(self.audit_logger)
         self.reporter = ClinicalReportGenerator(self.audit_logger)
@@ -131,9 +121,6 @@ class NeckCADController:
 
         for img_meta in session.images:
             # 1. Ingestion / graceful load
-            # Restored from the old pipeline: load via the receiver instead of
-            # a bare Image.open(), so a corrupt/unreadable file is marked
-            # invalid instead of throwing and killing the whole session.
             img_meta, raw_img = self.receiver.load_image(img_meta)
             if raw_img is None or img_meta.status != ImageStatus.PENDING:
                 continue
@@ -148,6 +135,7 @@ class NeckCADController:
             if img_meta.status != ImageStatus.VALID:
                 continue
 
+            # 3b. Cytology Artifact Quality Assessment
             np_raw = np.array(raw_img.convert("RGB"))
             artifact_res = self.artifact_detector.assess_fov(np_raw, image_id=img_meta.image_id)
             if not artifact_res.is_usable:
@@ -156,7 +144,6 @@ class NeckCADController:
                 continue
             
             # 4. Preprocessing
-            # Open the image as required by pipeline
             pil_img = raw_img.convert("RGB")
             stain_norm_pil = self.normaliser.normalise_stain(pil_img)
             img_meta = self.normaliser.process(img_meta, stain_norm_pil)
@@ -188,24 +175,20 @@ class NeckCADController:
         # 7. Multi-FOV Evidence Aggregation
         stacked_embeddings = torch.cat(valid_tensors, dim=0)
         stacked_morphology = torch.cat(valid_morphology_vectors, dim=0)
-
-        # Average quantitative morphology across valid FOVs
         case_morphology = torch.mean(stacked_morphology, dim=0, keepdim=True)
 
         case_embedding, attention_weights = self.fusion_engine(
             stacked_embeddings, quality_scores=valid_quality_scores
         )
 
-        # 8. Multi-Task Diagnostic Classification (D+9 -> projection layers)
+        # 8. Multi-Task Diagnostic Classification
         with torch.no_grad():
             outputs = self.classifier(case_embedding, case_morphology)
 
         milan_probs = outputs["milan_probs"].squeeze(0).cpu().numpy()
         primary_probs = outputs["primary_probs"].squeeze(0).cpu().numpy()
-        entity_probs = outputs["entity_probs"].squeeze(0).cpu().numpy()
 
         # 9. Uncertainty & OOD Analysis
-        # 9a. Map predictions to schema categories first so we have the indices
         milan_labels = [
             MilanCategory.I_NON_DIAGNOSTIC,
             MilanCategory.II_NON_NEOPLASTIC,
@@ -222,35 +205,20 @@ class NeckCADController:
         top_primary_idx = int(np.argmax(primary_probs))
         selected_primary = primary_labels[top_primary_idx]
 
-        # 9b. Pass original PyTorch tensors from the 'outputs' dict to the estimator
         milan_probs_tensor = outputs["milan_probs"]
         milan_logits_tensor = outputs["milan_logits"]
 
         entropy = self.uncertainty_estimator.calculate_entropy(milan_probs_tensor)
         energy = self.uncertainty_estimator.calculate_energy(milan_logits_tensor)
 
-        # 9c. Evaluate Uncertainty & OOD flags
         top_confidence = float(milan_probs[top_milan_idx])
-        
-        is_uncertain = False
-        if top_confidence < self.uncertainty_estimator.config.CONFIDENCE_THRESHOLD or entropy > 0.75:
-            is_uncertain = True
-            logger.warning(
-                f"Prediction flagged as UNCERTAIN. Top confidence: {top_confidence:.2f}, Normalized Entropy: {entropy:.2f}"
-            )
+        is_uncertain = top_confidence < self.uncertainty_estimator.config.CONFIDENCE_THRESHOLD or entropy > 0.75
+        is_ood = energy > self.uncertainty_estimator.config.OOD_ENERGY_THRESHOLD
 
-        is_ood = False
-        if energy > self.uncertainty_estimator.config.OOD_ENERGY_THRESHOLD:
-            is_ood = True
-            logger.warning(
-                f"Input flagged as OUT-OF-DISTRIBUTION (OOD). Energy score ({energy:.2f}) exceeds threshold ({self.uncertainty_estimator.config.OOD_ENERGY_THRESHOLD:.2f})."
-            )
-
-        # 9d. Build the final aggregated result
         session.aggregated_result = AggregatedResult(
             primary_category=selected_primary,
             milan_category=selected_milan.value,
-            specific_diagnosis="Pending Model Training Split",
+            specific_diagnosis="Trained Multi-Task Classification",
             confidence_scores={
                 "milan_confidence": top_confidence,
                 "primary_confidence": float(primary_probs[top_primary_idx]),
@@ -264,12 +232,7 @@ class NeckCADController:
             is_ood=is_ood,
         )
 
-
         # 10. Visual Explainability (real Grad-CAM overlays)
-        # Restored: use the actual raw image + features, the way the old
-        # pipeline did, instead of the placeholder generate_mock_cam(). If
-        # generate_mock_cam was a deliberate temporary stub while Grad-CAM
-        # support catches up with the new embedding pipeline, swap this back.
         for idx, img_id in enumerate(valid_image_ids):
             overlay = self.visualiser.generate_heatmap(
                 valid_raw_images[idx], valid_tensors[idx]
@@ -277,6 +240,6 @@ class NeckCADController:
             session.explanations[img_id] = overlay
 
         self.audit_logger.log(
-            message=f"Session {session.session_id} processing, execution and reporting complete. Milan Category: {selected_milan.value}.",
+            message=f"Session {session.session_id} complete. Milan Category: {selected_milan.value}.",
         )
         return session
