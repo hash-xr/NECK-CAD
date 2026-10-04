@@ -101,7 +101,7 @@ class UNIBackbone(BaseBackbone):
         super().__init__(model_name="uni", embedding_dim=1024)
         import timm
 
-        model_key = "hf-hub:MahmoodLab/UNI"
+        model_key = "hf_hub:MahmoodLab/UNI"
         self.encoder = timm.create_model(
             model_key, pretrained=pretrained, init_values=1e-5, dynamic_img_size=True
         )
@@ -116,18 +116,44 @@ class VirchowBackbone(BaseBackbone):
     """Paige.ai Virchow2 ViT-H/14 pathology foundation model."""
 
     def __init__(self, pretrained: bool = True):
-        super().__init__(model_name="virchow", embedding_dim=1280)
+        super().__init__(model_name="virchow2", embedding_dim=1280)
         import timm
+        from timm.layers.mlp import SwiGLUPacked
 
-        model_key = "hf-hub:paige-ai/Virchow2"
+        model_key = "hf_hub:paige-ai/Virchow2"
         self.encoder = timm.create_model(
-            model_key, pretrained=pretrained, mlp_layer=timm.layers.mlp.SwiGLU, act_layer=torch.nn.SiLU
+            model_key, pretrained=pretrained, mlp_layer=SwiGLUPacked, act_layer=torch.nn.SiLU
         )
         logger.info("Initialised VirchowBackbone (paige-ai/Virchow2).")
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        output = self.encoder(x)  # Shape: (B, 1280)
-        return torch.nn.functional.normalize(output, p=2, dim=1)
+        output = self.encoder(x)
+        cls_token = output[:, 0, :]
+        return torch.nn.functional.normalize(cls_token, p=2, dim=1)
+
+class UNI2Backbone(BaseBackbone):
+    """MahmoodLab UNI2 pathology foundation model."""
+
+    def __init__(self, pretrained: bool = True):
+        # UNI2 uses an embedding space of 1536 dimensions
+        super().__init__(model_name="uni2", embedding_dim=1536)
+        import timm
+
+        # Target the upgraded UNI2 repository key natively
+        model_key = "hf_hub:MahmoodLab/UNI2-h"
+        
+        # Standard timm kwargs configured for the ViT-H/14 architecture
+        self.encoder = timm.create_model(
+            model_key, 
+            pretrained=pretrained, 
+            init_values=1e-5, 
+            dynamic_img_size=True
+        )
+        logger.info("Initialised UNI2Backbone (MahmoodLab/UNI2-h).")
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        features = self.encoder(x)
+        return torch.nn.functional.normalize(features, p=2, dim=1)
 
 
 class BackboneFactory:
@@ -138,6 +164,7 @@ class BackboneFactory:
         "resnet50": ResNet50Backbone,
         "phikon": PhikonBackbone,
         "uni": UNIBackbone,
+        "uni2": UNI2Backbone,
         "virchow": VirchowBackbone,
     }
 

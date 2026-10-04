@@ -187,6 +187,7 @@ class NeckCADController:
 
         milan_probs = outputs["milan_probs"].squeeze(0).cpu().numpy()
         primary_probs = outputs["primary_probs"].squeeze(0).cpu().numpy()
+        entity_probs = outputs["entity_probs"].squeeze(0).cpu().numpy()
 
         # 9. Uncertainty & OOD Analysis
         milan_labels = [
@@ -208,6 +209,21 @@ class NeckCADController:
         milan_probs_tensor = outputs["milan_probs"]
         milan_logits_tensor = outputs["milan_logits"]
 
+        entity_labels = [
+            "Non-Neoplastic / Normal Salivary Tissue",
+            "Pleomorphic Adenoma",
+            "Warthin Tumor",
+            "Basal Cell Adenoma",
+            "Oncocytoma",
+            "Mucoepidermoid Carcinoma",
+            "Adenoid Cystic Carcinoma",
+            "Acinic Cell Carcinoma",
+            "Salivary Duct Carcinoma",
+            "Squamous Cell Carcinoma"
+        ]
+        top_entity_idx = int(np.argmax(entity_probs))
+        selected_entity = entity_labels[top_entity_idx]
+
         entropy = self.uncertainty_estimator.calculate_entropy(milan_probs_tensor)
         energy = self.uncertainty_estimator.calculate_energy(milan_logits_tensor)
 
@@ -218,10 +234,11 @@ class NeckCADController:
         session.aggregated_result = AggregatedResult(
             primary_category=selected_primary,
             milan_category=selected_milan.value,
-            specific_diagnosis="Trained Multi-Task Classification",
+            specific_diagnosis=selected_entity,
             confidence_scores={
                 "milan_confidence": top_confidence,
                 "primary_confidence": float(primary_probs[top_primary_idx]),
+                "entity_confidence": float(entity_probs[top_entity_idx]),
                 "shannon_entropy": float(entropy),
                 "free_energy": float(energy),
             },

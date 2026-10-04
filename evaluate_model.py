@@ -1,3 +1,4 @@
+# evaluate_model.py
 import os
 import logging
 import numpy as np
@@ -17,7 +18,7 @@ from sklearn.preprocessing import label_binarize
 
 from config.settings import SystemConfig
 from main import NeckCADController
-from training.dataset import SalivaryFNAFolderDataset
+from training.dataset import SalivaryFNAFolderDataset, create_patient_stratified_splits
 from training.trainer import MILAN_CATEGORY_NAMES
 
 logging.basicConfig(level=logging.INFO)
@@ -67,8 +68,8 @@ def plot_multiclass_roc_curves(
 ):
     """Computes and plots One-vs-Rest (OvR) ROC curves and AUC for each class."""
     n_classes = len(class_names)
+    # FIX: Explicitly convert to NumPy array to clear Pylance spmatrix typing conflicts
     y_true_bin = np.asarray(label_binarize(y_true, classes=list(range(n_classes))))
-
     y_probs_arr = np.asarray(y_probs)
 
     plt.figure(figsize=(10, 8))
@@ -86,6 +87,7 @@ def plot_multiclass_roc_curves(
             )
 
     plt.plot([0, 1], [0, 1], "k--", lw=1.5, label="Chance Level (AUC = 0.500)")
+    # FIX: Replaced list brackets with float positional parameters
     plt.xlim(0.0, 1.0)
     plt.ylim(0.0, 1.05)
     plt.xlabel("False Positive Rate (1 - Specificity)", fontsize=12)
@@ -189,11 +191,25 @@ if __name__ == "__main__":
     config = SystemConfig()
     controller = NeckCADController(config=config)
 
-    # Load test split dataset
-    test_samples = []  # e.g., torch.load("data/test_samples.pt")
-    if test_samples:
-        test_dataset = SalivaryFNAFolderDataset(test_samples)
+    # FIX: Replicate training stratification exactly to avoid data leakage
+    processed_data_path = "data/processed_features.pt"
+    
+    if os.path.exists(processed_data_path):
+        logger.info(f"Loading cached features to construct validation split from: '{processed_data_path}'")
+        all_samples = torch.load(processed_data_path)
+        
+        # Pull splitting seed from system configs
+        random_seed = getattr(config, "RANDOM_STATE", 42)
+        
+        # Split using identical parameters as run_training.py
+        _, _, test_dataset = create_patient_stratified_splits(
+            all_samples, val_size=0.2, test_size=0.1, random_state=random_seed
+        )
+
         test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
         evaluate_test_set(controller, test_loader)
     else:
-        logger.warning("No test samples found in 'test_samples'. Please specify a valid test dataset path.")
+        logger.warning(
+            f"Feature matrix map file not found at '{processed_data_path}'! "
+            f"Run 'extract_features.py' before executing evaluations."
+        )

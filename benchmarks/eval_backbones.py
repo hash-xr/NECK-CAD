@@ -1,3 +1,4 @@
+# benchmarks/eval_backbones.py
 import time
 import logging
 import torch
@@ -15,7 +16,6 @@ def benchmark_backbones(
     batch_size: int = 1,
     num_warmup: int = 3,
     num_runs: int = 10,
-    image_size: int = 224,
 ) -> List[Dict[str, Any]]:
     """
     Evaluates vision backbones on latency, memory allocation, and vector dimensions.
@@ -25,13 +25,13 @@ def benchmark_backbones(
         batch_size (int): Number of image patches per batch.
         num_warmup (int): Warmup forward passes before timing.
         num_runs (int): Number of timed iterations.
-        image_size (int): Height and width of target input tensor.
 
     Returns:
         List[Dict[str, Any]]: Benchmark results table.
     """
+    # 1. FIX: Swapped out debugging placeholders for real path foundation models
     if models_to_test is None:
-        models_to_test = ["mock", "resnet50"]  # Add 'phikon', 'uni', 'virchow' when weights are downloaded
+        models_to_test = ["resnet50", "phikon", "uni", "virchow"]
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Running backbone evaluation suite on device: {device}")
@@ -45,7 +45,10 @@ def benchmark_backbones(
             model = BackboneFactory.create(model_name=model_name, pretrained=True).to(device)
             model.eval()
 
-            # Generate synthetic patch tensor
+            # 2. FIX: Resolve required transformer input matrix height/width sizing parameters
+            # UNI/Virchow expect 224x224 patch fields, Phikon expects 224x224 (ViT architecture baseline)
+            # We enforce 224 across all foundation evaluations for standard footprint profiling
+            image_size = 224
             dummy_input = torch.randn(batch_size, 3, image_size, image_size, device=device)
 
             # Warmup runs
