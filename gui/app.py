@@ -213,6 +213,17 @@ def main():
 
         st.markdown('<div class="section-title">2. Aggregated Diagnostic Synthesis</div>', unsafe_allow_html=True)
 
+        checkpoint_path = os.path.join("./checkpoints", "best_neckcad_model.pt")
+        if not os.path.exists(checkpoint_path):
+            st.markdown(
+                '<div class="warning-card">⚠️ <b>Demonstration Mode (Uncalibrated Core)</b><br>'
+                'The system is running on initialised network parameters because no trained dataset checkpoint '
+                'is present. Classification categories and confidence arrays are synthetic placeholders until '
+                'historical training features are compiled.</div>', 
+                unsafe_allow_html=True
+            )
+            st.markdown("<br>", unsafe_allow_html=True)
+
         if res:
             # Custom styled cyber-medical metrics
             col1, col2, col3 = st.columns(3)
