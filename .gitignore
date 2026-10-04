@@ -19,3 +19,4 @@ config/secrets.py
 #Hide data
 raw_data/
 data/
+checkpoints/
