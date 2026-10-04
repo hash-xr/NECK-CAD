@@ -5,6 +5,13 @@ import torch
 from typing import List, Dict, Any
 import numpy as np
 
+import os
+import sys
+
+root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
+
 from models.backbone_factory import BackboneFactory
 
 logging.basicConfig(level=logging.INFO)
@@ -31,7 +38,7 @@ def benchmark_backbones(
     """
     # 1. FIX: Swapped out debugging placeholders for real path foundation models
     if models_to_test is None:
-        models_to_test = ["resnet50", "phikon", "uni", "virchow"]
+        models_to_test = ["mock", "resnet50", "phikon", "uni", "uni2", "virchow"]
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Running backbone evaluation suite on device: {device}")

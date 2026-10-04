@@ -1,3 +1,11 @@
+# config/settings.py
+try:
+    # Attempt to load and execute your hidden local tokens module
+    import config.secrets
+except ImportError:
+    # Keeps your pipeline running safely on other machines/deployment nodes
+    pass
+
 from dataclasses import dataclass, field
 from typing import List, Tuple
 
@@ -46,10 +54,10 @@ class SystemConfig:
     ENERGY_THRESHOLD: float = -5.0  # mirrors OOD_ENERGY_THRESHOLD
 
     # --- Backbone / Model Selection (NEW) ---------------------------------------
-    # One of: "resnet50", "phikon", "uni", "virchow" -- whichever your
+    # One of: "resnet50", "phikon", "uni", "uni2", "virchow" -- whichever your
     # BackboneFactory.create() supports. Set to whatever you've actually
     # implemented so far.
-    DEFAULT_BACKBONE: str = "resnet50"
+    DEFAULT_BACKBONE: str = "uni2"
 
     # --- Morphology Extraction (NEW) --------------------------------------------
     # Pixel-area bounds used by MorphologyExtractor's watershed segmentation

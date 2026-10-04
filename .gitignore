@@ -12,3 +12,6 @@ venv/
 # Reports
 
 reports/
+
+# Hide local security keys and credentials
+config/secrets.py
