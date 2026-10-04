@@ -142,12 +142,28 @@ class UNI2Backbone(BaseBackbone):
         # Target the upgraded UNI2 repository key natively
         model_key = "hf_hub:MahmoodLab/UNI2-h"
         
-        # Standard timm kwargs configured for the ViT-H/14 architecture
+        # Exact structural dictionary configuration specified by Mahmood Lab's official registry
+        timm_kwargs = {
+            'img_size': 224,
+            'patch_size': 14,
+            'depth': 24,
+            'num_heads': 24,
+            'init_values': 1e-5,
+            'embed_dim': 1536,
+            'mlp_ratio': 2.66667 * 2,
+            'num_classes': 0,           # Safely collapses token matrices to 2D
+            'no_embed_class': True,
+            'mlp_layer': timm.layers.mlp.SwiGLUPacked,  # Exact weight configuration block
+            'act_layer': torch.nn.SiLU,
+            'reg_tokens': 8,            # Configures tracking for the 8 registered architecture tokens
+            'dynamic_img_size': True
+        }
+        
+        # Instantiate the model by unpacking the full architectural kwargs
         self.encoder = timm.create_model(
             model_key, 
             pretrained=pretrained, 
-            init_values=1e-5, 
-            dynamic_img_size=True
+            **timm_kwargs
         )
         logger.info("Initialised UNI2Backbone (MahmoodLab/UNI2-h).")
 
