@@ -20,3 +20,6 @@ config/secrets.py
 raw_data/
 data/
 checkpoints/
+
+#Hide evaluation results
+evaluation_results/
