@@ -152,12 +152,12 @@ def evaluate_test_set(
 
     # 1. Classification Metrics Summary
     print("\n=================== MILAN RISK CATEGORY METRICS ===================")
-    print(classification_report(y_milan_true, y_milan_pred, target_names=MILAN_CATEGORY_NAMES, zero_division=0))
+    print(classification_report(y_milan_true, y_milan_pred, labels=list(range(len(MILAN_CATEGORY_NAMES))), target_names=MILAN_CATEGORY_NAMES, zero_division=0))
     print(f"Overall Milan Accuracy: {accuracy_score(y_milan_true, y_milan_pred):.4f}")
     print(f"Macro F1-Score: {f1_score(y_milan_true, y_milan_pred, average='macro', zero_division=0):.4f}")
 
     print("\n=================== PRIMARY CATEGORY METRICS ===================")
-    print(classification_report(y_primary_true, y_primary_pred, target_names=PRIMARY_CATEGORY_NAMES, zero_division=0))
+    print(classification_report(y_primary_true, y_primary_pred, labels=list(range(len(PRIMARY_CATEGORY_NAMES))), target_names=PRIMARY_CATEGORY_NAMES, zero_division=0))
 
     # 2. Visual Artifact Generation
     plot_confusion_matrix(
