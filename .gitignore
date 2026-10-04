@@ -23,3 +23,10 @@ checkpoints/
 
 #Hide evaluation results
 evaluation_results/
+
+# Editor Specific (VS Code configuration and workspace settings)
+.vscode/
+
+# OS Specific (Windows folder thumbnail caches)
+Thumbs.db
+desktop.ini
