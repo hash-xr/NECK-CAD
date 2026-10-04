@@ -1,16 +1,25 @@
 # benchmarks/eval_backbones.py
+import os
+import sys
+
+# 1. First, step back to the root folder directory and inject it into Python's search path
+root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
+
+# 2. Force load the secrets file IMMEDIATELY before any other library imports
+try:
+    import config.secrets
+    print(f"DEBUG: Found secrets.py! HF_TOKEN is currently loaded: {bool(os.environ.get('HF_TOKEN'))}")
+except ImportError:
+    print("DEBUG: Could not find config/secrets.py!")
+
+# 3. Now continue with your original benchmark imports
 import time
 import logging
 import torch
 from typing import List, Dict, Any
 import numpy as np
-
-import os
-import sys
-
-root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if root_dir not in sys.path:
-    sys.path.insert(0, root_dir)
 
 from models.backbone_factory import BackboneFactory
 
