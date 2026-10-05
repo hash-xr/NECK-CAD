@@ -137,7 +137,7 @@ class MorphologyExtractor:
             circularity = (4.0 * np.pi * area) / (perimeter**2)
             solidity = p.solidity
             eccentricity = p.eccentricity
-            mean_od = p.mean_intensity
+            mean_od = p.intensity_mean
 
             # Calculate Cytoplasm Area with Voronoi constraint
             total_cell_area = cell_counts[p.label] if p.label < len(cell_counts) else area
